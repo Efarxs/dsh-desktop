@@ -1,0 +1,35 @@
+{
+  /*
+    Host 侧 JS 产物：lib 下的 .js（lib/client.js 不在这里，它由 esbuild 打）。
+
+    与根 tsconfig 的差别只有三处，都是"出 JS 而不是类型"带来的：
+      - 这里要出 js，所以不开 emitDeclarationOnly；
+      - declaration 关掉：类型由根 tsconfig 那条命令单独出，再来一份就是重复；
+      - sourceMap 打开：崩了能对回源码行。.js.map 是**故意**进发布包的 ——
+        `files` 收的是整个 lib/，而包里有 src/，所以 map 里的 ../src/*.ts
+        指得到真文件，用户机器上崩了能直接看到原始行。别把它们排除掉。
+
+    ⚠️ **不能把 src/client 那半边包进来。** 它是浏览器代码，lib/client.js
+    由 esbuild 单独打包（要 CJS + 只能 require react）；让 tsc 也编一遍
+    会在 lib/client 目录下多出一堆 import react 的 ESM 文件 ——
+    没人 require 它们，但会让"产物里到底哪份是浏览器代码"变得说不清。
+  */
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "declaration": false,
+    "declarationMap": false,
+    "outDir": "lib",
+    "sourceMap": true
+  },
+  "include": [
+    "src/index.ts",
+    "src/config.ts",
+    "src/policy.ts",
+    "src/screencast.ts",
+    "src/service.ts",
+    "src/tools.ts",
+    "src/browser/**/*.ts",
+    "src/cdp/**/*.ts",
+    "src/compat/host.ts"
+  ]
+}

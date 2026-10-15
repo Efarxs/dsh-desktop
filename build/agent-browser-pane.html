@@ -1,0 +1,614 @@
+<!doctype html>
+<!--
+  Agent browser pane chrome: the tab strip and address bar for the embedded browser.
+
+  This page is not part of the Harness app: the driven page is a native view that
+  covers its band, so anything the app page painted there would be hidden. Main docks
+  this view in the top rows of the band and the page view starts below it, which is why
+  the two row heights below must equal TAB_STRIP_HEIGHT + PANE_TOOLBAR_HEIGHT in
+  src/main/agent-browser/pane-layout.ts.
+
+  Independent page rules (build/AGENTS.md): own semantic CSS variables with light/dark
+  fallbacks, no --dsh/--dsw tokens, no network fonts, zh + en in the same batch, and
+  every untrusted string (page titles, URLs, error text) written with textContent.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+    />
+    <title>Agent Browser</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --surface: #f2f2f4;
+        --surface-raised: #ffffff;
+        --tab: #e4e4e7;
+        --tab-active: #ffffff;
+        --ink: #18181b;
+        --muted: #71717a;
+        --line: #d4d4d8;
+        --grip: #a1a1aa;
+        --accent: #18181b;
+        --accent-ink: #ffffff;
+        --danger: #b42318;
+      }
+      [data-theme='dark'] {
+        --surface: #1c1c1f;
+        --surface-raised: #26262a;
+        --tab: #2f2f34;
+        --tab-active: #18181b;
+        --ink: #f4f4f5;
+        --muted: #a1a1aa;
+        --line: #3f3f46;
+        --grip: #8b8b94;
+        --accent: #f4f4f5;
+        --accent-ink: #18181b;
+        --danger: #f97066;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; overflow: hidden; }
+      body {
+        background: var(--surface);
+        color: var(--ink);
+        font-size: 12px;
+        -webkit-user-select: none;
+        user-select: none;
+      }
+      /* Row 1: tabs. Height is TAB_STRIP_HEIGHT. */
+      .tab-row {
+        display: flex;
+        align-items: stretch;
+        height: 34px;
+        gap: 4px;
+        /* The left gutter is where the resize handle lives. */
+        /* The gutter is the drag handle's hit area (14px) plus breathing room. */
+        padding: 4px 4px 0 18px;
+        border-bottom: 1px solid var(--line);
+      }
+      .tabs {
+        display: flex;
+        flex: 1 1 auto;
+        align-items: stretch;
+        gap: 4px;
+        min-width: 0;
+        overflow-x: auto;
+        overflow-y: hidden;
+        scrollbar-width: thin;
+      }
+      .tab {
+        display: flex;
+        align-items: center;
+        max-width: 200px;
+        min-width: 96px;
+        padding: 0 4px 0 8px;
+        border: 1px solid var(--line);
+        border-radius: 7px 7px 0 0;
+        background: var(--tab);
+        color: var(--ink);
+        font: inherit;
+        cursor: pointer;
+      }
+      .tab[aria-selected='true'] {
+        background: var(--tab-active);
+        border-bottom-color: var(--tab-active);
+        font-weight: 600;
+      }
+      .tab .label {
+        flex: 1 1 auto;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        padding: 4px 0;
+      }
+      .tab .close {
+        flex: 0 0 auto;
+        width: 18px;
+        height: 18px;
+        margin-left: 2px;
+        border: 0;
+        border-radius: 5px;
+        background: transparent;
+        color: var(--muted);
+        font: inherit;
+        line-height: 1;
+        cursor: pointer;
+      }
+      .tab .close:hover, .tab .close:focus-visible { background: var(--line); color: var(--ink); }
+      .add {
+        flex: 0 0 auto;
+        width: 26px;
+        align-self: flex-start;
+        border: 1px solid transparent;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--ink);
+        font-size: 15px;
+        line-height: 22px;
+        cursor: pointer;
+      }
+      .add:hover, .add:focus-visible { background: var(--tab); border-color: var(--line); }
+      .notice {
+        flex: 0 1 auto;
+        align-self: center;
+        max-width: 220px;
+        margin-left: auto;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--muted);
+      }
+      .notice[data-kind='error'] { color: var(--danger); }
+      /* Row 2: navigation. Height is PANE_TOOLBAR_HEIGHT. */
+      .toolbar {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        height: 38px;
+        padding: 0 8px;
+      }
+      .icon {
+        flex: 0 0 auto;
+        width: 26px;
+        height: 26px;
+        border: 1px solid transparent;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--ink);
+        font-size: 14px;
+        line-height: 1;
+        cursor: pointer;
+      }
+      .icon:hover:not(:disabled), .icon:focus-visible { background: var(--tab); border-color: var(--line); }
+      .icon:disabled { color: var(--muted); opacity: 0.55; cursor: default; }
+      .address {
+        flex: 1 1 auto;
+        min-width: 0;
+        height: 26px;
+        padding: 0 10px;
+        border: 1px solid var(--line);
+        border-radius: 13px;
+        background: var(--surface-raised);
+        color: var(--ink);
+        font: inherit;
+        -webkit-user-select: text;
+        user-select: text;
+      }
+      .address:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+      .address[aria-invalid='true'] { border-color: var(--danger); }
+      .go {
+        flex: 0 0 auto;
+        height: 26px;
+        padding: 0 10px;
+        border: 0;
+        border-radius: 13px;
+        background: var(--accent);
+        color: var(--accent-ink);
+        font: inherit;
+        cursor: pointer;
+      }
+      .go:disabled { opacity: 0.55; cursor: default; }
+      /* Drag handle: the pane's left edge. Moving it re-splits the window content. */
+      .grab {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        /* Wider than it looks: the grip is small, the hit area is not. */
+        width: 14px;
+        cursor: ew-resize;
+        background: transparent;
+      }
+      /* The seam between the conversation and the page, always drawn at the edge. */
+      .grab::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        width: 1px;
+        background: var(--line);
+      }
+      /* A grip you can see without hovering: an invisible splitter is a missing one. */
+      .grip {
+        position: absolute;
+        left: 4px;
+        top: 50%;
+        width: 7px;
+        height: 34px;
+        transform: translateY(-50%);
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        background-color: var(--surface-raised);
+        background-image:
+          linear-gradient(var(--grip), var(--grip)),
+          linear-gradient(var(--grip), var(--grip));
+        background-repeat: no-repeat;
+        background-position: 1px 50%, 3px 50%;
+        background-size: 1px 16px;
+      }
+      .grab:hover .grip, .grab:focus-visible .grip, .grab[data-dragging='true'] .grip {
+        border-color: var(--accent);
+        background-image:
+          linear-gradient(var(--accent), var(--accent)),
+          linear-gradient(var(--accent), var(--accent));
+      }
+      .grab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+      .visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        clip-path: inset(50%);
+        overflow: hidden;
+        white-space: nowrap;
+      }
+    </style>
+  </head>
+  <body data-theme="light">
+    <div
+      class="grab"
+      id="grab"
+      role="separator"
+      aria-orientation="vertical"
+      tabindex="0"
+      aria-label="Resize browser pane"
+    >
+      <span class="grip" aria-hidden="true"></span>
+    </div>
+    <div class="tab-row">
+      <div class="tabs" id="tabs" role="tablist" aria-label="Browser tabs"></div>
+      <button class="add" id="new-tab" type="button" aria-label="New tab">+</button>
+      <span class="notice" id="notice" role="status" aria-live="polite"></span>
+    </div>
+  <div class="toolbar">
+    <button class="icon" id="back" type="button" aria-label="Back">&#8592;</button>
+    <button class="icon" id="forward" type="button" aria-label="Forward">&#8594;</button>
+    <button class="icon" id="reload" type="button" aria-label="Reload">&#10227;</button>
+    <input class="address" id="address" type="text" spellcheck="false" autocomplete="off" placeholder="Address" />
+    <button class="go" id="go" type="button">Go</button>
+    <button class="icon" id="hide" type="button" aria-label="Hide browser pane">&#10005;</button>
+  </div>
+  <span class="visually-hidden" id="live" role="status" aria-live="polite"></span>
+  <script>
+    (function () {
+      'use strict'
+
+      // Keys are the contract in src/shared/agent-browser.ts; labels live here so the
+      // strip needs no Harness locale machinery. Both languages are the same batch.
+      var STRINGS = {
+        en: {
+          tabs: 'Browser tabs',
+          newTab: 'New tab',
+          closeTab: 'Close tab',
+          back: 'Back',
+          forward: 'Forward',
+          reload: 'Reload',
+          go: 'Go',
+          hide: 'Hide browser pane',
+          address: 'Address or search term',
+          untitled: 'New tab',
+          loading: 'Loading',
+          resize: 'Resize browser pane',
+          busy: 'Working',
+          noBridge: 'The browser pane is unavailable: its control page could not start.'
+        },
+        zh: {
+          tabs: '浏览器标签',
+          newTab: '新建标签页',
+          closeTab: '关闭标签页',
+          back: '后退',
+          forward: '前进',
+          reload: '刷新',
+          go: '打开',
+          hide: '隐藏浏览器面板',
+          address: '网址',
+          untitled: '新标签页',
+          loading: '加载中',
+          resize: '调整浏览器面板宽度',
+          busy: '处理中',
+          noBridge: '浏览器面板不可用：控制面板未能启动。'
+        }
+      }
+
+      var bridge = window.dshAgentBrowserPane
+      var tabsRow = document.getElementById('tabs')
+      var noticeRow = document.getElementById('notice')
+      var live = document.getElementById('live')
+      var grab = document.getElementById('grab')
+      var address = document.getElementById('address')
+      var buttons = {
+        newTab: document.getElementById('new-tab'),
+        back: document.getElementById('back'),
+        forward: document.getElementById('forward'),
+        reload: document.getElementById('reload'),
+        go: document.getElementById('go'),
+        hide: document.getElementById('hide')
+      }
+      var lastState = null
+      // Typing in the address field must not be overwritten by a push that arrives
+      // because the model navigated in another tab.
+      var addressDirty = false
+
+      function strings() {
+        return STRINGS[(lastState && lastState.lang === 'zh') ? 'zh' : 'en']
+      }
+
+      function activeTab() {
+        if (!lastState || !lastState.tabs) return null
+        for (var i = 0; i < lastState.tabs.length; i++) {
+          if (lastState.tabs[i].active) return lastState.tabs[i]
+        }
+        return lastState.tabs[0] || null
+      }
+
+      function showNotice(text, kind) {
+        noticeRow.textContent = text || ''
+        noticeRow.dataset.kind = kind || 'info'
+        noticeRow.hidden = !text
+        live.textContent = text || ''
+      }
+
+      function send(action) {
+        if (!bridge) return Promise.resolve(null)
+        return bridge.applyAction(action).then(
+          function (state) {
+            lastState = state
+            // A rejected gesture answers with the notice it rejected: the invoke
+            // response is the only place that message exists, because nothing about
+            // the pane changed and main therefore pushes nothing.
+            if (state && state.notice) showNotice(state.notice, 'error')
+            else if (noticeRow.dataset.kind === 'error') showNotice('', 'info')
+            render()
+            return state
+          },
+          function (error) {
+            showNotice(error && error.message ? error.message : String(error), 'error')
+            return null
+          }
+        )
+      }
+
+      function tabLabel(tab) {
+        var title = (tab.title || '').trim()
+        if (title) return title
+        var url = (tab.url || '').trim()
+        if (url && url !== 'about:blank') return url
+        return strings().untitled
+      }
+
+      function renderTabs() {
+        // Focus may sit on a tab button; a full rebuild would drop it, so remember it.
+        var focused = document.activeElement
+        var focusedId = focused && focused.dataset ? focused.dataset.tabId : ''
+        tabsRow.textContent = ''
+        var tabs = (lastState && lastState.tabs) || []
+        tabs.forEach(function (tab) {
+          var button = document.createElement('button')
+          button.type = 'button'
+          button.className = 'tab'
+          button.id = 'tab-' + tab.id
+          button.dataset.tabId = tab.id
+          button.setAttribute('role', 'tab')
+          button.setAttribute('aria-selected', tab.active ? 'true' : 'false')
+          button.setAttribute('aria-busy', tab.loading ? 'true' : 'false')
+          button.title = tab.url || ''
+
+          var label = document.createElement('span')
+          label.className = 'label'
+          label.textContent = tabLabel(tab)
+          button.appendChild(label)
+
+          if (tab.loading) {
+            var state = document.createElement('span')
+            state.className = 'visually-hidden'
+            state.textContent = strings().loading
+            button.appendChild(state)
+          }
+
+          var close = document.createElement('span')
+          close.className = 'close'
+          close.setAttribute('role', 'button')
+          close.setAttribute('aria-label', strings().closeTab)
+          close.dataset.tabId = tab.id
+          close.title = strings().closeTab
+          close.textContent = String.fromCharCode(10005)
+          button.appendChild(close)
+
+          tabsRow.appendChild(button)
+        })
+        // The add button lives outside the row so scrolling a long tab list never
+        // hides the way back to a new tab.
+        if (focusedId) {
+          var restore = document.getElementById('tab-' + focusedId)
+          if (restore) restore.focus()
+        }
+      }
+
+      function render() {
+        if (!lastState) return
+        var lang = lastState.lang === 'zh' ? 'zh' : 'en'
+        document.documentElement.lang = lang
+        document.body.dataset.theme = lastState.theme === 'dark' ? 'dark' : 'light'
+        var labels = strings()
+        tabsRow.setAttribute('aria-label', labels.tabs)
+        grab.setAttribute('aria-label', labels.resize)
+        grab.setAttribute('aria-valuetext', String(Math.round(lastState.paneWidth)))
+        buttons.newTab.setAttribute('aria-label', labels.newTab)
+        buttons.hide.setAttribute('aria-label', labels.hide)
+        buttons.back.setAttribute('aria-label', labels.back)
+        buttons.forward.setAttribute('aria-label', labels.forward)
+        buttons.reload.setAttribute('aria-label', labels.reload)
+        buttons.go.textContent = labels.go
+        address.placeholder = labels.address
+        noticeRow.hidden = !noticeRow.textContent
+
+        var current = activeTab()
+        renderTabs()
+        buttons.back.disabled = !current || !current.canGoBack
+        buttons.forward.disabled = !current || !current.canGoForward
+        buttons.reload.disabled = !current
+        buttons.go.disabled = !current || address.value.trim() === ''
+        if (current && !addressDirty) {
+          address.value = current.url === 'about:blank' ? '' : current.url
+          address.removeAttribute('aria-invalid')
+        }
+        document.body.setAttribute('aria-busy', current && current.loading ? 'true' : 'false')
+        // A rejection the user has not read yet must not be erased by a render that
+        // happens because the page in another tab finished loading.
+        if (!noticeRow.textContent) live.textContent = current && current.loading ? labels.loading : ''
+      }
+
+      function navigateFromAddress() {
+        var value = address.value.trim()
+        if (!value || !activeTab()) return
+        addressDirty = false
+        showNotice('', 'info')
+        send({ type: 'navigate', url: value }).then(function (state) {
+          if (!state) return
+          // Rejected addresses come back as a notice with the tab unchanged.
+          if (state.notice) address.setAttribute('aria-invalid', 'true')
+          else address.removeAttribute('aria-invalid')
+        })
+      }
+
+      buttons.newTab.addEventListener('click', function () {
+        send({ type: 'new-tab', url: '' })
+      })
+      buttons.hide.addEventListener('click', function () {
+        send({ type: 'hide' })
+      })
+      buttons.back.addEventListener('click', function () {
+        send({ type: 'go-back' })
+      })
+      buttons.forward.addEventListener('click', function () {
+        send({ type: 'go-forward' })
+      })
+      buttons.reload.addEventListener('click', function () {
+        send({ type: 'reload' })
+      })
+      buttons.go.addEventListener('click', navigateFromAddress)
+      address.addEventListener('keydown', function (event) {
+        if (event.key === 'Enter') {
+          event.preventDefault()
+          navigateFromAddress()
+        } else if (event.key === 'Escape') {
+          addressDirty = false
+          address.blur()
+          render()
+        }
+      })
+      address.addEventListener('input', function () {
+        addressDirty = true
+        address.removeAttribute('aria-invalid')
+        // Editing the address supersedes the previous rejection.
+        if (noticeRow.dataset.kind === 'error') showNotice('', 'info')
+        buttons.go.disabled = address.value.trim() === ''
+      })
+      address.addEventListener('focus', function () {
+        addressDirty = true
+      })
+      address.addEventListener('blur', function () {
+        addressDirty = false
+      })
+      document.addEventListener('keydown', function (event) {
+        if ((event.ctrlKey || event.metaKey) && (event.key === 'l' || event.key === 'L')) {
+          event.preventDefault()
+          address.focus()
+          address.select()
+        }
+      })
+      tabsRow.addEventListener('click', function (event) {
+        var target = event.target
+        if (!target.dataset || !target.dataset.tabId) return
+        event.stopPropagation()
+        var isClose = target.classList.contains('close')
+        send(isClose ? { type: 'close-tab', tabId: target.dataset.tabId } : { type: 'activate-tab', tabId: target.dataset.tabId })
+      })
+
+      // Dragging the edge re-splits the content area. One action per animation frame
+      // keeps the main process from re-laying-out on every pointer sample.
+      var drag = null
+      var dragFrame = 0
+      var dragPendingWidth = 0
+      // Merging a burst into one frame keeps the newest width, not the first: the
+      // pane must not freeze at wherever the cursor was when the frame started.
+      function queueWidth(width) {
+        dragPendingWidth = width
+        if (dragFrame) return
+        dragFrame = requestAnimationFrame(function () {
+          dragFrame = 0
+          send({ type: 'set-pane-width', width: Math.round(dragPendingWidth) })
+        })
+      }
+      grab.addEventListener('pointerdown', function (event) {
+        if (!lastState) return
+        drag = { startClientX: event.clientX, startWidth: lastState.paneWidth }
+        grab.dataset.dragging = 'true'
+        // Capture can reject an unknown pointer id; losing it only means the drag
+        // stops following the cursor, so it must not break the press itself.
+        try {
+          if (typeof grab.setPointerCapture === 'function') grab.setPointerCapture(event.pointerId)
+        } catch (ignored) {}
+      })
+      grab.addEventListener('pointermove', function (event) {
+        if (!drag) return
+        // Pointer capture keeps the stream even when the cursor leaves the handle.
+        queueWidth(drag.startWidth + (event.clientX - drag.startClientX))
+      })
+      function endDrag(event) {
+        if (!drag) return
+        drag = null
+        delete grab.dataset.dragging
+        if (grab.hasPointerCapture && grab.hasPointerCapture(event.pointerId)) {
+          grab.releasePointerCapture(event.pointerId)
+        }
+      }
+      grab.addEventListener('pointerup', endDrag)
+      grab.addEventListener('pointercancel', endDrag)
+      grab.addEventListener('keydown', function (event) {
+        if (!lastState) return
+        var step = event.shiftKey ? 160 : 40
+        if (event.key === 'ArrowLeft') queueWidth(lastState.paneWidth - step)
+        else if (event.key === 'ArrowRight') queueWidth(lastState.paneWidth + step)
+        else return
+        event.preventDefault()
+      })
+
+      if (!bridge) {
+        // Without the bridge there is no Harness locale to borrow, so an independent
+        // page falls back to the browser language (the one case build/AGENTS.md allows).
+        var fallbackLang = (navigator.language || 'en').toLowerCase().indexOf('zh') === 0 ? 'zh' : 'en'
+        showNotice(STRINGS[fallbackLang].noBridge, 'error')
+        Object.keys(buttons).forEach(function (key) {
+          buttons[key].disabled = true
+        })
+        address.disabled = true
+        return
+      }
+
+      bridge.onState(function (state) {
+        lastState = state
+        // Pushes arrive for everything the model does in another tab. Only a pushed
+        // notice may write the notice row; an unrelated push must not erase a
+        // rejection the user has not read yet.
+        if (state.notice) showNotice(state.notice, 'error')
+        render()
+      })
+      bridge.getState().then(
+        function (state) {
+          lastState = state
+          render()
+        },
+        function (error) {
+          showNotice(error && error.message ? error.message : String(error), 'error')
+        }
+      )
+    })()
+  </script>
+</body>
+</html>

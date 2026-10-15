@@ -1,0 +1,14 @@
+# 依赖与构建产物（lib/ 每跑一次 npm run build 就整个重建，没有提交的价值）
+node_modules/
+lib/
+.npm-cache/
+
+# 打包产物（每升一次版本就多一个）
+*.tgz
+
+# dsh 会话导出（调试用，里面是完整的对话与工具往返，可能带站点内容）
+dsh-session-*.zip
+
+# 本地跑测试/探针留下的临时目录
+_devtmp/
+*.log

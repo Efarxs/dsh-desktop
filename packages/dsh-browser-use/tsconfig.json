@@ -1,0 +1,38 @@
+{
+  /*
+    dsh-browser-use 的 TypeScript 配置（类型声明那一半）。
+
+    结构沿用 dsh-qw-rrzu-ops / dsh-qw-order-desktop：**一个 tsconfig，两段构建** ——
+
+      1. `tsc --emitDeclarationOnly --removeComments`  →  lib/types 下的 .d.ts
+      2. `esbuild` 打客户端 bundle                      →  lib/client.js
+      3. `tsc -p tsconfig.server.json`                  →  lib 下的 host 侧 .js
+
+    为什么要第三条：本插件的 host 产物是 **tsc 直出**的，没有走打包器
+    （见 scripts 里的构建说明）。tsc 直出的硬约束是
+    **相对 import 必须带 `.js` 后缀** —— 源码里已经全部带上了，别删。
+
+    注意：jsonc 的块注释里不能出现星号加斜杠那种注释结束符，
+    所以下面凡是要写 glob 的地方都拆开写或改了措辞。
+  */
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "declaration": true,
+    "declarationMap": true,
+    "rootDir": "src",
+    "outDir": "lib/types",
+    "jsx": "react-jsx",
+    /* 客户端那半只用得到 react 的类型；DOM lib 已在上面给全。 */
+    "types": ["node", "react"]
+  },
+  /* src/client 下的 CLIENT_CONTRACT.md 不是 TS，不需要列在这里。 */
+  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.d.ts"]
+}

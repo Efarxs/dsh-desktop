@@ -1,0 +1,39 @@
+# 把「浏览器操控（codex 式）」装进 Harness profile。
+#
+# `workDir` 默认留空 = Harness 主目录下的 `browser-use`。独立 profile 就放在
+# `<workDir>/browser-profile` 里（除非 browserProfileDir 另有指定）。
+# **不要指向你日常用的 Chrome profile 目录**：运行中的 Chrome 加不上
+# --remote-debugging-port，而且会让插件与你的日常浏览互相干扰。
+#
+# `cdpEndpoint` 留空 = 插件自己起浏览器（探测本机 Chrome/Edge，Edge 优先）。
+# 填了 = 优先连这个端点（例如和 dsh-qw-rrzu-ops 共用 http://127.0.0.1:24022），
+# 连不上再自己起。
+#
+# `newOriginPolicy`：模型首次访问未批准站点时的策略。
+#   ask（默认）= 工具返回 NEEDS_APPROVAL，模型在对话里问你，你说"允许"后模型调
+#                browser_approve_origin 继续；
+#   allow = 直接放行（方便但危险）；deny = 直接拒绝。
+# `allowedOrigins`：预批准的站点 origin，例如 ["https://ops.rrzu.com"]。
+#
+# `allowEvaluate`：是否允许 browser_evaluate 执行任意 JS（等价 codex 的
+# full_cdp_access）。默认 false，需要时再开。
+#
+# `screencast`：右侧边栏实时画面。format 固定 jpeg。
+- insert:
+    - id: browser-use
+      name: dsh-browser-use
+      inject: [tools]
+      config:
+        workDir: ''
+        cdpEndpoint: ''
+        browser: 'auto'
+        browserProfileDir: ''
+        startUrl: 'about:blank'
+        allowedOrigins: []
+        newOriginPolicy: 'ask'
+        allowEvaluate: false
+        screencast:
+          enabled: true
+          quality: 70
+          maxWidth: 1280
+          everyNthFrame: 2

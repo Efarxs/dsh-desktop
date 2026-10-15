@@ -1,0 +1,27 @@
+{
+  /*
+    测试用的类型检查配置（`npm run check` 的第二段）。
+
+    与根 tsconfig 的差别：把 `test/` 与 `vitest.config.ts` 也纳入检查范围、
+    `rootDir` 提到项目根（否则 test 里的相对 import 会跑到 rootDir 之外）、`noEmit`。
+
+    ⚠️ **测试里 import 源码要写 `.js` 后缀**（`../src/policy.js`），跟源码内部的
+    相对 import 一个写法。理由：tsc 直出的产物就是这个形状，而 vitest 走自己的
+    解析（能把 `.js` 映射回 `.ts`，实测可用）。写成 `.ts` 反而会被 tsc 拒掉
+    （`allowImportingTsExtensions` 没开，开了就没法出 JS 产物）。
+  */
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "lib/types-test",
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "test/**/*.ts",
+    "vitest.config.ts"
+  ]
+}
