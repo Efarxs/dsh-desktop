@@ -112,7 +112,7 @@ describe('dsh-browser-use activation through the host-inserted profile', () => {
     // The whole point: the model's tool list must contain the entry point the user
     // asked for, not just a plugin that reported "loaded" in the log.
     expect(names).toContain('browser_navigate')
-    expect(names.filter((name) => name.startsWith('browser_'))).toHaveLength(16)
+    expect(names.filter((name) => name.startsWith('browser_'))).toHaveLength(24)
   })
 
   it('fails activation naming the missing service instead of loading with no tools', async () => {

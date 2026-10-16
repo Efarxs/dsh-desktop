@@ -4,7 +4,8 @@
 
 - 权威源码：`~/workspace/dsh-browser-use`（Efar 维护的版本）
 - 更新流程：在插件仓库改完 → `npm run verify` 全绿 → `npm run build` →
-  把 `lib/`、`cordis.patch.yml`、`README.md` 拷到这里覆盖
+  把 `lib/`、`cordis.patch.yml`、`README.md` 拷到这里覆盖并提交
+  （`lib/` 已纳入版本控制，CI 构建与 electron-builder 打包直接加载它）
 - `package.json` 是 fork 侧的包装（`file:` 依赖用），改插件本身请去源码仓库
 
 为什么是拷贝而不是 workspace 软链：dsh-desktop 的 `file:` 依赖 + electron-builder

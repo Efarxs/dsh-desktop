@@ -1,7 +1,9 @@
-# 依赖与构建产物（lib/ 每跑一次 npm run build 就整个重建，没有提交的价值）
+# 依赖与缓存
 node_modules/
-lib/
 .npm-cache/
+
+# lib/ 纳入版本控制：CI 构建与 electron-builder 打包直接加载它，
+# 本地 npm run build 重建后需随源码改动一并提交，保证 CI 与本地一致
 
 # 打包产物（每升一次版本就多一个）
 *.tgz
