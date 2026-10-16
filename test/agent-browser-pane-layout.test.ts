@@ -11,6 +11,9 @@ import {
   PANE_CHROME_HEIGHT,
   paneGeometry,
   planPaneOpen,
+  planCompanionOpen,
+  planCompanionRestore,
+  planPaneResize,
   planPaneRestore,
   preferredPaneWidth,
   resolvePaneWidth,
@@ -121,6 +124,33 @@ describe('planPaneRestore', () => {
   it('does nothing when the pane never grew the window', () => {
     const preOpen = bounds(0, 1920)
     expect(planPaneRestore(preOpen, preOpen, { side: 'right', width: 0 })).toBeNull()
+  })
+})
+
+describe('planPaneResize', () => {
+  it('keeps the app width fixed while resizing a right-grown pane', () => {
+    const preOpen = bounds(100, 1400)
+    const growth = { side: 'right' as const, width: 700 }
+    expect(planPaneResize({ ...preOpen, width: 2100 }, preOpen, growth, 900)).toEqual({
+      ...preOpen,
+      width: 2300
+    })
+  })
+
+  it('moves the window left when a left-grown pane becomes wider', () => {
+    const preOpen = bounds(1220, 700)
+    const growth = { side: 'left' as const, width: 420 }
+    expect(planPaneResize({ ...preOpen, x: 800, width: 1120 }, preOpen, growth, 600)).toEqual({
+      ...preOpen,
+      x: 620,
+      width: 1300
+    })
+  })
+
+  it('does not resize a window the user changed after docking', () => {
+    const preOpen = bounds(100, 1400)
+    const growth = { side: 'right' as const, width: 700 }
+    expect(planPaneResize({ ...preOpen, width: 2000 }, preOpen, growth, 900)).toBeNull()
   })
 })
 

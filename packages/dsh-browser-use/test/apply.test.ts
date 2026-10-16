@@ -103,9 +103,9 @@ describe('apply 的加载行为', () => {
 })
 
 describe('apply 注册的工具面', () => {
-  it('16 个工具全注册上，且名字都带 browser_ 前缀', () => {
+  it('24 个工具全注册上，且名字都带 browser_ 前缀', () => {
     const { tools } = runApply()
-    expect(tools).toHaveLength(16)
+    expect(tools).toHaveLength(24)
     for (const t of tools) {
       expect(String(t['name']).startsWith('browser_'), String(t['name'])).toBe(true)
     }

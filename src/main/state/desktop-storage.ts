@@ -1,6 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+
+const ASYNC_RENAME_ATTEMPTS = 4
+const ASYNC_RENAME_DELAY_MS = 40
+const RETRYABLE_RENAME_CODES = new Set(['EPERM', 'EBUSY', 'EACCES'])
 
 export const STORAGE_FILENAME = 'desktop-storage.json'
 
@@ -111,9 +115,10 @@ export class DesktopStorageManager {
     try {
       await mkdir(dirname(this.filePath), { recursive: true })
       await writeFile(tmpPath, serialized, 'utf8')
-      await rename(tmpPath, this.filePath)
+      await renameWithRetry(tmpPath, this.filePath)
     } catch (error) {
       this.isDirty = true
+      try { await unlink(tmpPath) } catch { /* the rename may already have consumed it */ }
       this.handleError(error, 'async-flush')
     }
   }
@@ -182,6 +187,19 @@ export class DesktopStorageManager {
     const err = error instanceof Error ? error : new Error(String(error))
     if (this.onError) {
       this.onError(err, context)
+    }
+  }
+}
+
+async function renameWithRetry(source: string, destination: string): Promise<void> {
+  for (let attempt = 0; attempt < ASYNC_RENAME_ATTEMPTS; attempt += 1) {
+    try {
+      await rename(source, destination)
+      return
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (!RETRYABLE_RENAME_CODES.has(code ?? '') || attempt === ASYNC_RENAME_ATTEMPTS - 1) throw error
+      await new Promise((resolve) => setTimeout(resolve, ASYNC_RENAME_DELAY_MS * (attempt + 1)))
     }
   }
 }

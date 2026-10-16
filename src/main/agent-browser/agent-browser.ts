@@ -2,12 +2,11 @@
  * Agent browser: a real Chromium view embedded in the desktop window,
  * driven by the model through the CDP relay (see cdp-relay.ts).
  *
- * Layout: the dsh web UI keeps the main window's webContents; the agent browser is
- * a `WebContentsView` docked in a band on the right, with its own chrome strip view
- * (tabs + address bar) on top of that band. Because native views *cover* the page
- * instead of pushing it, opening the pane widens the window by the pane width first:
- * the app keeps the width it had, and the covered area is area the app never had.
- * See pane-layout.ts for the arithmetic.
+ * Layout: production uses an independent top-level BrowserWindow positioned beside
+ * the main window once. Its chrome strip and driven page remain WebContentsViews
+ * inside that window, so native browser content cannot cover the Harness page. The
+ * child-view layout remains available for isolated tests and hosts that do not
+ * provide a pane window factory.
  *
  * - One view per CDP target; only the active view is attached to the window.
  * - The pane is hidden until the first CDP client connects (model started
@@ -20,7 +19,7 @@
  *   on top of, and the strip must work even when the app page is a recovery page.
  * - Login state persists in the app's userData via a dedicated partition.
  */
-import { WebContentsView, screen, type BrowserWindow, type WebContents } from 'electron'
+import { WebContentsView, screen, type BrowserWindow, type BrowserWindowConstructorOptions, type View, type WebContents } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
 import {
@@ -33,9 +32,14 @@ import {
   type AgentBrowserTab
 } from '../../shared/agent-browser'
 import {
+  MIN_PANE_WIDTH,
   PANE_CHROME_HEIGHT,
   planPaneOpen,
+  planPaneResize,
   planPaneRestore,
+  planCompanionOpen,
+  planCompanionRestore,
+  preferredPaneWidth,
   resolvePaneWidth,
   paneGeometry,
   type PaneGrowth,
@@ -112,6 +116,8 @@ export interface AgentBrowserOptions {
   getChromeResources?: () => PaneChromeResources
   /** Display work area used to decide how far the window may grow. */
   getWorkArea?: (windowBounds: Rect) => Rect
+  /** Create the browser companion window. Production uses this instead of child views. */
+  createPaneWindow?: (options: BrowserWindowConstructorOptions) => BrowserWindow
   log?: (message: string) => void
 }
 
@@ -135,8 +141,10 @@ export class AgentBrowser implements RelayTargetHost {
   private relay: CdpRelay | null = null
   private visible = false
   private activeTargetId: string | null = null
+  /** The relay starts with one real view so CDP has a target before the first client. */
+  private placeholderTargetId: string | null = null
   private readonly log: (message: string) => void
-  /** Pane band width in DIPs; the splitter writes here. */
+  /** Browser content width in DIPs; native resize events keep it current. */
   private paneWidth = 0
   /** Content bounds to go back to when the pane was opened by widening the window. */
   private preOpenBounds: Rect | null = null
@@ -144,6 +152,13 @@ export class AgentBrowser implements RelayTargetHost {
   /** Transient message for the address field, cleared by the next pushed action. */
   private notice = ''
   private chromeView: WebContentsView | null = null
+  /** The BrowserWindow's own WebContentsView, which must shrink beside the pane. */
+  private appView: View | null = null
+  /** Separate native window used by the production desktop host. */
+  private paneWindow: BrowserWindow | null = null
+  private closingPaneForShutdown = false
+  private companionPreOpenBounds: Rect | null = null
+  private companionMainBounds: Rect | null = null
   /**
    * The strip page loads asynchronously while docking is synchronous, so the load
    * promise is kept here: an open click must not start a second webContents.
@@ -166,7 +181,8 @@ export class AgentBrowser implements RelayTargetHost {
 
   /** Create the first (hidden) view and start the CDP relay. Must run before the Harness subprocess spawns. */
   async start(): Promise<string> {
-    await this.createView(BLANK_URL)
+    const placeholder = await this.createView(BLANK_URL)
+    this.placeholderTargetId = placeholder.target.id
     this.relay = await CdpRelay.start(this, {
       onFirstClient: () => this.setVisible(true),
     })
@@ -199,19 +215,31 @@ export class AgentBrowser implements RelayTargetHost {
       return this.visible
     }
     if (visible) {
-      const plan = planPaneOpen({
-        contentBounds: toRect(window.getContentBounds()),
-        workArea: (this.options.getWorkArea ?? defaultWorkArea)(toRect(window.getBounds())),
-        canGrow: !window.isMaximized() && !window.isFullScreen()
-      })
-      if (!plan.canDock) {
+      if (this.options.createPaneWindow !== undefined) this.ensurePaneWindow(window)
+      const plan = this.paneWindow === null
+        ? { kind: 'embedded' as const, value: planPaneOpen({
+          contentBounds: toRect(window.getContentBounds()),
+          workArea: (this.options.getWorkArea ?? defaultWorkArea)(toRect(window.getBounds())),
+          canGrow: !window.isMaximized() && !window.isFullScreen()
+        }) }
+        : { kind: 'independent' as const, value: planCompanionOpen(
+          toRect(window.getContentBounds()),
+          (this.options.getWorkArea ?? defaultWorkArea)(toRect(window.getBounds()))
+        ) }
+      if (!plan.value.canDock) {
         this.log('[agent-browser] window is too narrow to dock the pane; staying hidden')
         return false
       }
-      this.preOpenBounds = toRect(window.getContentBounds())
-      if (plan.contentBounds) window.setContentBounds(plan.contentBounds)
-      this.growth = plan.growth
-      this.paneWidth = plan.paneWidth
+      if (plan.kind === 'embedded') {
+        this.preOpenBounds = toRect(window.getContentBounds())
+        this.growth = plan.value.growth
+        if (plan.value.contentBounds) window.setContentBounds(plan.value.contentBounds)
+      } else if (plan.value.mainBounds !== null) {
+        this.companionPreOpenBounds = toRect(window.getContentBounds())
+        this.companionMainBounds = plan.value.mainBounds
+        window.setContentBounds(plan.value.mainBounds)
+      }
+      this.paneWidth = plan.value.paneWidth
       // Docking cannot wait for the strip page, so it loads in the background and
       // re-lays-out when ready. Without it the pane would be a page with no tabs.
       void this.ensureChrome().then(() => {
@@ -221,11 +249,14 @@ export class AgentBrowser implements RelayTargetHost {
         this.log(`[agent-browser] pane chrome unavailable: ${error instanceof Error ? error.message : String(error)}`)
       })
     } else {
+      this.paneWindow?.hide()
+      this.restoreCompanionWindow(window)
       this.restoreWindowWidth(window)
       this.detachAllViews()
     }
     this.visible = visible
     this.layout()
+    if (visible) this.paneWindow?.showInactive()
     this.options.onVisibilityChange?.(visible)
     return this.visible
   }
@@ -234,7 +265,7 @@ export class AgentBrowser implements RelayTargetHost {
     return this.setVisible(!this.visible)
   }
 
-  /** Width currently given to the pane band, in DIPs (0 while hidden). */
+  /** Width currently occupied by the browser window, in DIPs (0 while hidden). */
   get currentPaneWidth(): number {
     return this.visible ? this.paneWidth : 0
   }
@@ -327,8 +358,26 @@ export class AgentBrowser implements RelayTargetHost {
       case 'set-pane-width': {
         const window = this.currentWindow()
         if (window === undefined) break
-        const width = resolvePaneWidth(window.contentView.getBounds().width, input.width)
+        const currentBounds = toRect(window.getContentBounds())
+        const width = this.paneWindow !== null
+          ? Math.max(MIN_PANE_WIDTH, Math.round(input.width))
+          : resolvePaneWidth(currentBounds.width, input.width)
         if (width === undefined) break
+        if (this.paneWindow !== null && !this.paneWindow.isDestroyed()) {
+          const next = Math.max(MIN_PANE_WIDTH, Math.round(input.width))
+          const height = this.paneWindow.getContentBounds().height
+          this.paneWindow.setContentSize(next, height)
+          this.paneWidth = next
+          this.layout()
+          break
+        }
+        if (this.preOpenBounds !== null && this.growth !== null) {
+          const resized = planPaneResize(currentBounds, this.preOpenBounds, this.growth, width)
+          if (resized !== null) {
+            window.setContentBounds(resized)
+            this.growth = { ...this.growth, width }
+          }
+        }
         this.paneWidth = width
         this.layout()
         break
@@ -343,10 +392,25 @@ export class AgentBrowser implements RelayTargetHost {
   /** RelayTargetHost --------------------------------------------------- */
 
   listTargets(): RelayTarget[] {
+    // A companion window can be destroyed by an older build or during shutdown;
+    // never advertise those native handles to a newly connected CDP client.
+    this.pruneDestroyedViews()
     return [...this.views.values()].map((v) => v.target)
   }
 
   async createTarget(url: string): Promise<RelayTarget> {
+    const placeholderId = this.placeholderTargetId
+    if (placeholderId !== null && this.views.size === 1) {
+      const placeholder = this.views.get(placeholderId)
+      if (placeholder !== undefined && placeholder.target.url === BLANK_URL) {
+        // The relay needs a target before a client connects, while BrowserService
+        // needs a target for its first page. Reusing this view avoids showing a
+        // second empty tab during the first model connection.
+        await this.loadIn(placeholder, url)
+        this.placeholderTargetId = null
+        return placeholder.target
+      }
+    }
     return (await this.createView(url)).target
   }
 
@@ -402,13 +466,102 @@ export class AgentBrowser implements RelayTargetHost {
     if (!this.resizeWired.has(window)) {
       this.resizeWired.add(window)
       window.on('resize', () => this.layout())
+      window.on('closed', () => {
+        // The browser window is independent while the main window is alive, but
+        // must not become an orphan after the application window is destroyed.
+        if (this.paneWindow !== null && !this.paneWindow.isDestroyed()) {
+          this.closingPaneForShutdown = true
+          this.paneWindow.close()
+        }
+      })
     }
+    if (this.paneWindow === null) this.rememberAppView(window)
     return window
+  }
+
+  private ensurePaneWindow(mainWindow: BrowserWindow): void {
+    if (this.paneWindow !== null && !this.paneWindow.isDestroyed()) return
+    const create = this.options.createPaneWindow
+    if (create === undefined) return
+    const main = toRect(mainWindow.getBounds())
+    const workArea = (this.options.getWorkArea ?? defaultWorkArea)(main)
+    const width = Math.max(MIN_PANE_WIDTH, Math.min(preferredPaneWidth(main.width), workArea.width))
+    const rightX = main.x + main.width
+    const leftX = main.x - width
+    const x = rightX + width <= workArea.x + workArea.width
+      ? rightX
+      : leftX >= workArea.x
+        ? leftX
+        : Math.max(workArea.x, workArea.x + workArea.width - width)
+    const pane = create({
+      show: false,
+      frame: true,
+      x,
+      y: main.y,
+      width,
+      height: main.height,
+      minWidth: MIN_PANE_WIDTH,
+      minHeight: 480,
+      resizable: true,
+      minimizable: true,
+      maximizable: true,
+      closable: true,
+      skipTaskbar: false,
+      backgroundColor: '#18181b',
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        webSecurity: true
+      }
+    })
+    this.paneWindow = pane
+    pane.on('move', () => this.syncPaneWidthFromWindow())
+    pane.on('resize', () => this.syncPaneWidthFromWindow())
+    pane.on('close', (event: { preventDefault?: () => void }) => {
+      if (this.closingPaneForShutdown) return
+      // Closing the companion is a user visibility choice. Keeping its native
+      // contents alive avoids invalidating the CDP target while a model turn is
+      // still running, and lets the existing toggle reopen the same tabs.
+      event.preventDefault?.()
+      this.setVisible(false)
+    })
+    pane.on('closed', () => {
+      this.closingPaneForShutdown = false
+      const mainWindow = this.currentWindow()
+      if (mainWindow !== undefined) this.restoreCompanionWindow(mainWindow)
+      if (this.paneWindow === pane) this.paneWindow = null
+      if (this.visible) {
+        this.visible = false
+        this.detachAllViews()
+        this.options.onVisibilityChange?.(false)
+      }
+    })
+  }
+
+  private syncPaneWidthFromWindow(): void {
+    const pane = this.paneWindow
+    if (pane === null || pane.isDestroyed()) return
+    this.paneWidth = Math.max(MIN_PANE_WIDTH, pane.getContentBounds().width)
+    this.layout()
+    this.pushState()
+  }
+
+  /**
+   * BrowserWindow owns its renderer through a child WebContentsView. Native pane
+   * views are painted above it, so remembering that child lets us reserve the
+   * pane band instead of merely covering the renderer's right edge.
+   */
+  private rememberAppView(window: BrowserWindow): void {
+    const candidate = window.contentView.children.find((child) => {
+      return child instanceof WebContentsView && child.webContents === window.webContents
+    })
+    if (candidate !== undefined) this.appView = candidate
   }
 
   /** Take one view out of the window it is docked into, if any. */
   private detachView(view: WebContentsView): void {
-    const window = this.currentWindow()
+    const window = this.paneWindow ?? this.currentWindow()
     if (window === undefined) return
     if (window.contentView.children.includes(view)) window.contentView.removeChildView(view)
   }
@@ -492,6 +645,8 @@ export class AgentBrowser implements RelayTargetHost {
     try {
       await contents.loadURL(url)
       record.target.url = contents.getURL()
+      record.target.title = contents.getTitle()
+      this.emitChanged()
     } catch (error) {
       // A rejected navigation is a visible failure, not a hung strip.
       this.reportNotice(error instanceof Error ? error.message : String(error))
@@ -578,7 +733,7 @@ export class AgentBrowser implements RelayTargetHost {
 
   /** Drop every attached view; used when hiding so "hidden" really means hidden. */
   private detachAllViews(): void {
-    const window = this.currentWindow()
+    const window = this.paneWindow ?? this.currentWindow()
     if (window === undefined) return
     for (const v of this.views.values()) this.detachView(v.view)
     if (this.chromeView !== null) this.detachView(this.chromeView)
@@ -592,9 +747,33 @@ export class AgentBrowser implements RelayTargetHost {
     this.growth = null
   }
 
+  private restoreCompanionWindow(mainWindow: BrowserWindow): void {
+    const original = this.companionPreOpenBounds
+    const managed = this.companionMainBounds
+    if (original !== null && managed !== null) {
+      try {
+        if (!mainWindow.isDestroyed()) {
+          const restored = planCompanionRestore(toRect(mainWindow.getContentBounds()), original, managed)
+          if (restored !== null && !mainWindow.isDestroyed()) mainWindow.setContentBounds(restored)
+        }
+      } catch (error) {
+        // Closing windows can invalidate the native handle between the lifecycle
+        // check and getContentBounds; restoration is optional during shutdown.
+        if (error instanceof Error && /destroyed/i.test(error.message)) {
+          this.log('[agent-browser] skipped main-window restoration after destruction')
+        } else {
+          throw error
+        }
+      }
+    }
+    this.companionPreOpenBounds = null
+    this.companionMainBounds = null
+  }
+
   private layout(): void {
-    const window = this.currentWindow()
-    if (window === undefined) return
+    const mainWindow = this.currentWindow()
+    if (mainWindow === undefined) return
+    const window = this.paneWindow ?? mainWindow
     const contentView = window.contentView
     const active = this.activeView()
     for (const v of this.views.values()) {
@@ -604,9 +783,15 @@ export class AgentBrowser implements RelayTargetHost {
       // was a no-op and the toggle could never be undone from the keyboard.
       if (!this.visible || v !== active) contentView.removeChildView(v.view)
     }
-    if (!this.visible || !active) return
     const area = contentView.getBounds()
-    const width = resolvePaneWidth(area.width, this.paneWidth)
+    if (this.paneWindow === null) this.rememberAppView(window)
+    if (!this.visible || !active) {
+      if (this.paneWindow === null) this.appView?.setBounds({ x: 0, y: 0, width: area.width, height: area.height })
+      return
+    }
+    const width = this.paneWindow !== null
+      ? area.width
+      : resolvePaneWidth(area.width, this.paneWidth)
     if (width === undefined) {
       // The window shrank under what both halves need. Hiding is the honest answer:
       // continuing to dock would cover the chat again, which is the original defect.
@@ -616,6 +801,7 @@ export class AgentBrowser implements RelayTargetHost {
     }
     this.paneWidth = width
     const geometry = paneGeometry(area, width)
+    if (this.paneWindow === null) this.appView?.setBounds({ x: 0, y: 0, width: geometry.page.x, height: area.height })
     const chrome = this.chromeView
     if (chrome !== null && !chrome.webContents.isDestroyed()) {
       if (!contentView.children.includes(chrome)) contentView.addChildView(chrome)
@@ -636,6 +822,11 @@ export class AgentBrowser implements RelayTargetHost {
       this.chromeView.webContents.close()
     }
     this.chromeView = null
+    if (this.paneWindow !== null && !this.paneWindow.isDestroyed()) {
+      this.closingPaneForShutdown = true
+      this.paneWindow.close()
+    }
+    this.paneWindow = null
   }
 }
 

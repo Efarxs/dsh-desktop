@@ -53,6 +53,15 @@ async function pressKey(ctx: Ctx, key: string) {
   }
 }
 
+async function evaluateValue<T>(ctx: Ctx, expression: string): Promise<T | undefined> {
+  const result = await ctx.svc.conn().send<{ result?: { value?: T } }>('Runtime.evaluate', {
+    expression,
+    returnByValue: true,
+    awaitPromise: true,
+  })
+  return result.result?.value
+}
+
 export function buildTools(ctx: Ctx): ToolDefinition[] {
   const { svc, cfg, log } = ctx;
   void log;
@@ -395,6 +404,175 @@ export function buildTools(ctx: Ctx): ToolDefinition[] {
       timeoutMs: 10000,
       async execute() {
         return svc.status();
+      },
+    }),
+
+    defineTool({
+      name: 'browser_page_info',
+      description: '【桌面内置·优先使用】读取当前页面信息：URL、标题、视口尺寸、页面尺寸、滚动位置和是否有对话框。',
+      parameters: {},
+      timeoutMs: 10000,
+      async execute(_a, exec) {
+        await svc.ensure(exec.signal)
+        const info = await evaluateValue<Record<string, unknown>>(ctx, `(() => {
+          const root = document.documentElement
+          return { url: location.href, title: document.title, viewportWidth: innerWidth,
+            viewportHeight: innerHeight, scrollX, scrollY,
+            pageWidth: root?.scrollWidth ?? innerWidth, pageHeight: root?.scrollHeight ?? innerHeight }
+        })()`)
+        return info ?? { url: svc.currentUrl, title: '' }
+      },
+    }),
+
+    defineTool({
+      name: 'browser_read_element',
+      description: '【桌面内置·优先使用】按 CSS 选择器读取元素的文本、HTML、值、属性和可见性。',
+      parameters: {
+        selector: { type: 'string', required: true, description: 'CSS 选择器' },
+        attribute: { type: 'string', description: '可选属性名' },
+      },
+      timeoutMs: 15000,
+      async execute(a, exec) {
+        await svc.ensure(exec.signal)
+        const selector = JSON.stringify(S(a['selector']))
+        const attribute = a['attribute'] === undefined ? 'null' : JSON.stringify(S(a['attribute']))
+        const value = await evaluateValue<Record<string, unknown>>(ctx, `(() => {
+          const el = document.querySelector(${selector});
+          if (!el) return { found: false };
+          const style = getComputedStyle(el);
+          return { found: true, text: el.innerText ?? el.textContent ?? '', html: el.outerHTML,
+            value: 'value' in el ? el.value : null, attribute: ${attribute} === null ? null : el.getAttribute(${attribute}),
+            visible: style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' }
+        })()`)
+        return value ?? { found: false }
+      },
+    }),
+
+    defineTool({
+      name: 'browser_wait_for_selector',
+      description: '【桌面内置·优先使用】等待 CSS 选择器对应的元素出现或消失。',
+      parameters: {
+        selector: { type: 'string', required: true, description: 'CSS 选择器' },
+        state: { type: 'string', enum: ['visible', 'attached', 'hidden'], description: '默认 visible' },
+        timeoutMs: { type: 'number', description: '等待上限，默认 10000，最多 30000' },
+      },
+      timeoutMs: 35000,
+      async execute(a, exec) {
+        await svc.ensure(exec.signal)
+        const selector = S(a['selector'])
+        const state = S(a['state'], 'visible')
+        const timeout = Math.min(Math.max(N(a['timeoutMs'], 10000), 500), 30000)
+        const started = Date.now()
+        for (;;) {
+          const found = await evaluateValue<boolean>(ctx, `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (${JSON.stringify(state)} === 'attached') return !!el; if (${JSON.stringify(state)} === 'hidden') return !el || getComputedStyle(el).display === 'none' || getComputedStyle(el).visibility === 'hidden'; return !!el && getComputedStyle(el).display !== 'none' && getComputedStyle(el).visibility !== 'hidden'; })()`)
+          if (found) return { ok: true, found: true, selector, state, waitedMs: Date.now() - started }
+          if (Date.now() - started >= timeout) return { ok: false, found: false, selector, state, waitedMs: timeout }
+          await delay(250)
+        }
+      },
+    }),
+
+    defineTool({
+      name: 'browser_wait_for_url',
+      description: '【桌面内置·优先使用】等待当前 URL 包含指定文本或匹配正则表达式。',
+      parameters: {
+        pattern: { type: 'string', required: true, description: 'URL 片段或正则表达式' },
+        timeoutMs: { type: 'number', description: '等待上限，默认 10000，最多 30000' },
+        regex: { type: 'boolean', description: '是否把 pattern 当作正则表达式' },
+      },
+      timeoutMs: 35000,
+      async execute(a, exec) {
+        await svc.ensure(exec.signal)
+        const pattern = S(a['pattern'])
+        const timeout = Math.min(Math.max(N(a['timeoutMs'], 10000), 500), 30000)
+        const started = Date.now()
+        for (;;) {
+          const url = (await svc.snapshot()).url
+          const matched = B(a['regex']) ? (() => { try { return new RegExp(pattern).test(url) } catch { return false } })() : url.includes(pattern)
+          if (matched) return { ok: true, matched: true, url, waitedMs: Date.now() - started }
+          if (Date.now() - started >= timeout) return { ok: false, matched: false, url, waitedMs: timeout }
+          await delay(250)
+        }
+      },
+    }),
+
+    defineTool({
+      name: 'browser_scroll',
+      description: '【桌面内置·优先使用】滚动页面，或把指定 CSS 元素滚动到可视区域。',
+      parameters: {
+        deltaX: { type: 'number', description: '水平滚动像素' },
+        deltaY: { type: 'number', description: '垂直滚动像素，默认 500' },
+        selector: { type: 'string', description: '可选 CSS 选择器；提供后优先滚动到该元素' },
+      },
+      timeoutMs: 15000,
+      async execute(a, exec) {
+        await svc.ensure(exec.signal)
+        const selector = S(a['selector'])
+        if (selector) {
+          await evaluateValue(ctx, `document.querySelector(${JSON.stringify(selector)})?.scrollIntoView({block:'center', inline:'nearest'})`)
+        } else {
+          await svc.conn().send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 10, y: 10, deltaX: N(a['deltaX']), deltaY: N(a['deltaY'], 500) })
+        }
+        return { ok: true, ...(await evaluateValue<Record<string, unknown>>(ctx, '({ scrollX, scrollY })') ?? {}) }
+      },
+    }),
+
+    defineTool({
+      name: 'browser_drag',
+      description: '【桌面内置·优先使用】按坐标拖动鼠标，适合滑块和拖放区域。points 是 [x1,y1,x2,y2,...]。',
+      parameters: { points: { type: 'array', required: true, description: '至少两个坐标点', items: { type: 'number' } } },
+      timeoutMs: 15000,
+      async execute(a, exec) {
+        await svc.ensure(exec.signal)
+        const points = Array.isArray(a['points']) ? (a['points'] as unknown[]).filter((v): v is number => typeof v === 'number' && Number.isFinite(v)) : []
+        if (points.length < 4 || points.length % 2 !== 0) throw new Error('browser-use: points 至少需要两个 [x,y] 坐标')
+        const conn = svc.conn()
+        await conn.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: points[0], y: points[1], button: 'left', clickCount: 1 })
+        for (let i = 2; i < points.length; i += 2) await conn.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: points[i], y: points[i + 1], buttons: 1 })
+        await conn.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: points[points.length - 2], y: points[points.length - 1], button: 'left', clickCount: 1 })
+        return { ok: true, ...(await freshSnapshot(ctx)) }
+      },
+    }),
+
+    defineTool({
+      name: 'browser_check',
+      description: '【桌面内置·优先使用】勾选或取消 CSS 选择器定位的 checkbox/radio。',
+      parameters: { selector: { type: 'string', required: true, description: 'checkbox/radio 的 CSS 选择器' }, checked: { type: 'boolean', required: true, description: '目标状态' } },
+      timeoutMs: 15000,
+      async execute(a, exec) {
+        await svc.ensure(exec.signal)
+        const selector = JSON.stringify(S(a['selector']))
+        const checked = B(a['checked'])
+        const result = await evaluateValue<Record<string, unknown>>(ctx, `(() => { const el = document.querySelector(${selector}); if (!el) return {ok:false, reason:'元素不存在'}; el.checked = ${checked}; el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); return {ok:true, checked:el.checked}; })()`)
+        return result ?? { ok: false }
+      },
+    }),
+
+    defineTool({
+      name: 'browser_upload',
+      description: '【桌面内置·优先使用】把本机文件设置到 file input 元素。路径必须是用户明确提供的本机路径。',
+      parameters: {
+        selector: { type: 'string', required: true, description: 'file input 的 CSS 选择器' },
+        path: { type: 'string', required: true, description: '本机文件绝对路径；多个文件可传数组' },
+        paths: { type: 'array', description: '可选的多个本机文件绝对路径', items: { type: 'string' } },
+      },
+      timeoutMs: 20000,
+      async execute(a, exec) {
+        await svc.ensure(exec.signal)
+        const selector = S(a['selector'])
+        const paths = Array.isArray(a['paths'])
+          ? (a['paths'] as unknown[]).filter((v): v is string => typeof v === 'string' && v.length > 0)
+          : [S(a['path'])].filter((v) => v.length > 0)
+        if (paths.length === 0) throw new Error('browser-use: browser_upload 需要至少一个文件路径')
+        const conn = svc.conn()
+        const document = await conn.send<{ root?: { nodeId?: number } }>('DOM.getDocument', { depth: 1 })
+        const rootId = document.root?.nodeId
+        if (typeof rootId !== 'number') throw new Error('browser-use: 取不到页面 DOM')
+        const found = await conn.send<{ nodeId?: number }>('DOM.querySelector', { nodeId: rootId, selector })
+        if (typeof found.nodeId !== 'number' || found.nodeId === 0) throw new Error(`browser-use: 找不到 file input ${selector}`)
+        await conn.send('DOM.setFileInputFiles', { nodeId: found.nodeId, files: paths })
+        await delay(300)
+        return { ok: true, selector, files: paths, ...(await freshSnapshot(ctx)) }
       },
     }),
   ];

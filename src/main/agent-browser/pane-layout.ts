@@ -56,6 +56,12 @@ export interface PaneOpenPlan {
   growth: PaneGrowth | null
 }
 
+export interface CompanionOpenPlan {
+  canDock: boolean
+  paneWidth: number
+  mainBounds: Rect | null
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max)
 }
@@ -75,6 +81,22 @@ export function resolvePaneWidth(contentWidth: number, requestedWidth: number): 
   const max = contentWidth - MIN_APP_CONTENT_WIDTH
   if (max < MIN_PANE_WIDTH) return undefined
   return clamp(Math.round(requestedWidth), MIN_PANE_WIDTH, max)
+}
+
+/** Reserve display space for an independent browser window without attaching it to the app. */
+export function planCompanionOpen(contentBounds: Rect, workArea: Rect): CompanionOpenPlan {
+  const available = Math.max(0, workArea.x + workArea.width - contentBounds.x)
+  const paneWidth = clamp(preferredPaneWidth(contentBounds.width), MIN_PANE_WIDTH, Math.max(MIN_PANE_WIDTH, available - MIN_APP_CONTENT_WIDTH))
+  const mainWidth = Math.min(contentBounds.width, available - paneWidth)
+  if (mainWidth < MIN_APP_CONTENT_WIDTH) return { canDock: false, paneWidth: 0, mainBounds: null }
+  return { canDock: true, paneWidth, mainBounds: { ...contentBounds, width: mainWidth } }
+}
+
+/** Restore only an unchanged main window; user resizing remains authoritative. */
+export function planCompanionRestore(contentBounds: Rect, preOpen: Rect, mainBounds: Rect): Rect | null {
+  if (contentBounds.x !== mainBounds.x || contentBounds.y !== mainBounds.y) return null
+  if (contentBounds.width !== mainBounds.width || contentBounds.height !== mainBounds.height) return null
+  return preOpen
 }
 
 /**
@@ -125,6 +147,28 @@ export function planPaneRestore(
   if (growth.side === 'left' && contentBounds.x !== preOpen.x - growth.width) return null
   if (growth.side === 'right' && contentBounds.x !== preOpen.x) return null
   return { ...contentBounds, x: preOpen.x, width: preOpen.width }
+}
+
+/**
+ * Resize a pane that opened by widening the window while preserving the app's
+ * original content width. Returning null when the window no longer matches the
+ * bounds we managed prevents a later splitter drag from fighting a user resize.
+ */
+export function planPaneResize(
+  contentBounds: Rect,
+  preOpen: Rect,
+  growth: PaneGrowth,
+  paneWidth: number
+): Rect | null {
+  if (growth.width <= 0 || !Number.isFinite(paneWidth) || paneWidth < 0) return null
+  const expectedWidth = preOpen.width + growth.width
+  const expectedX = growth.side === 'left' ? preOpen.x - growth.width : preOpen.x
+  if (contentBounds.width !== expectedWidth || contentBounds.x !== expectedX) return null
+
+  const width = Math.round(paneWidth)
+  return growth.side === 'left'
+    ? { ...contentBounds, x: preOpen.x - width, width: preOpen.width + width }
+    : { ...contentBounds, width: preOpen.width + width }
 }
 
 export interface PaneGeometry {

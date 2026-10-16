@@ -239,70 +239,6 @@ describe('agent browser pane chrome', () => {
     expect(address.value).toBe('partial.typing')
   })
 
-  it('exposes the pane width on the resize handle', async () => {
-    const { document } = mount(paneState({ paneWidth: 640 }))
-    await settle()
-
-    const grab = document.getElementById('grab')
-    expect(grab.getAttribute('aria-label')).toBe('Resize browser pane')
-    expect(grab.getAttribute('aria-valuetext')).toBe('640')
-  })
-
-  it('shows a grip without hovering, and keeps it out of the name', async () => {
-    const { document } = mount(paneState())
-    await settle()
-
-    const grab = document.getElementById('grab')
-    const grip = grab.querySelector('.grip')
-    expect(grip).not.toBeNull()
-    // The pill is decoration: the separator already carries its own label, so a
-    // reader must not announce the handle twice.
-    expect(grip.getAttribute('aria-hidden')).toBe('true')
-    expect(grab.textContent.trim()).toBe('')
-
-    // A splitter the user only finds by hovering is a splitter the user does not
-    // have: the resting rule must paint it, and hover may only recolour it.
-    const rest = (html.match(/\n {6}\.grip \{([^}]*)\}/) ?? [])[1] ?? ''
-    expect(rest).toContain('background-color: var(--surface-raised)')
-    expect(rest).toContain('border: 1px solid var(--line)')
-    expect(rest).not.toMatch(/opacity: 0|display: none|visibility: hidden/)
-    const hovered = (html.match(/\.grab:hover \.grip[^{]*\{([^}]*)\}/) ?? [])[1] ?? ''
-    expect(hovered).toContain('var(--accent)')
-    expect(hovered).not.toMatch(/opacity|display: |visibility/)
-
-    // The hit area is wider than the pill so the drag target is still grabbable.
-    const handle = (html.match(/\n {6}\.grab \{([^}]*)\}/) ?? [])[1] ?? ''
-    expect(handle).toMatch(/width: (1[0-9]|[2-9][0-9])px/)
-  })
-
-  it('turns a drag of the edge into width gestures, one per frame', async () => {
-    const { page, document, gestures } = mount(paneState({ paneWidth: 800 }))
-    await settle()
-
-    const grab = document.getElementById('grab')
-    pointer(page, grab, 'pointerdown', 500)
-    pointer(page, grab, 'pointermove', 470)
-    pointer(page, grab, 'pointermove', 460)
-    await nextFrames(page)
-    pointer(page, grab, 'pointerup', 460)
-    await settle()
-
-    const widths = gestures.filter((gesture) => gesture.type === 'set-pane-width')
-    expect(widths.length).toBe(1)
-    expect(widths[0].width).toBe(760)
-  })
-
-  it('moves the split from the keyboard too', async () => {
-    const { page, document, gestures } = mount(paneState({ paneWidth: 800 }))
-    await settle()
-
-    pressKey(page, document.getElementById('grab'), 'ArrowLeft')
-    await nextFrames(page)
-    await settle()
-
-    expect(gestures).toEqual([{ type: 'set-pane-width', width: 760 }])
-  })
-
   it('switches language and theme from the pushed state', async () => {
     const { document, push } = mount(paneState())
     await settle()
@@ -329,7 +265,7 @@ describe('agent browser pane chrome', () => {
 
         expect(document.documentElement.lang).toBe(lang)
         expect(document.body.dataset.theme).toBe(theme)
-        const labelled = ['#new-tab', '#back', '#forward', '#reload', '#hide', '#grab']
+        const labelled = ['#new-tab', '#back', '#forward', '#reload', '#hide']
         for (const selector of labelled) {
           const label = document.querySelector(selector).getAttribute('aria-label')
           expect(label, `${selector} in ${lang}/${theme}`).toBeTruthy()

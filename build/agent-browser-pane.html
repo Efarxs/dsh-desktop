@@ -1,11 +1,10 @@
 <!doctype html>
 <!--
-  Agent browser pane chrome: the tab strip and address bar for the embedded browser.
+  Agent browser window chrome: the tab strip and address bar for the independent browser window.
 
   This page is not part of the Harness app: the driven page is a native view that
-  covers its band, so anything the app page painted there would be hidden. Main docks
-  this view in the top rows of the band and the page view starts below it, which is why
-  the two row heights below must equal TAB_STRIP_HEIGHT + PANE_TOOLBAR_HEIGHT in
+  covers its window content, so the chrome is a separate native view above it. The
+  two row heights below must equal TAB_STRIP_HEIGHT + PANE_TOOLBAR_HEIGHT in
   src/main/agent-browser/pane-layout.ts.
 
   Independent page rules (build/AGENTS.md): own semantic CSS variables with light/dark
@@ -65,9 +64,7 @@
         align-items: stretch;
         height: 34px;
         gap: 4px;
-        /* The left gutter is where the resize handle lives. */
-        /* The gutter is the drag handle's hit area (14px) plus breathing room. */
-        padding: 4px 4px 0 18px;
+        padding: 4px 4px 0 8px;
         border-bottom: 1px solid var(--line);
       }
       .tabs {
@@ -192,52 +189,6 @@
         cursor: pointer;
       }
       .go:disabled { opacity: 0.55; cursor: default; }
-      /* Drag handle: the pane's left edge. Moving it re-splits the window content. */
-      .grab {
-        position: absolute;
-        top: 0;
-        bottom: 0;
-        left: 0;
-        /* Wider than it looks: the grip is small, the hit area is not. */
-        width: 14px;
-        cursor: ew-resize;
-        background: transparent;
-      }
-      /* The seam between the conversation and the page, always drawn at the edge. */
-      .grab::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        bottom: 0;
-        left: 0;
-        width: 1px;
-        background: var(--line);
-      }
-      /* A grip you can see without hovering: an invisible splitter is a missing one. */
-      .grip {
-        position: absolute;
-        left: 4px;
-        top: 50%;
-        width: 7px;
-        height: 34px;
-        transform: translateY(-50%);
-        border: 1px solid var(--line);
-        border-radius: 4px;
-        background-color: var(--surface-raised);
-        background-image:
-          linear-gradient(var(--grip), var(--grip)),
-          linear-gradient(var(--grip), var(--grip));
-        background-repeat: no-repeat;
-        background-position: 1px 50%, 3px 50%;
-        background-size: 1px 16px;
-      }
-      .grab:hover .grip, .grab:focus-visible .grip, .grab[data-dragging='true'] .grip {
-        border-color: var(--accent);
-        background-image:
-          linear-gradient(var(--accent), var(--accent)),
-          linear-gradient(var(--accent), var(--accent));
-      }
-      .grab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
       .visually-hidden {
         position: absolute;
         width: 1px;
@@ -250,16 +201,6 @@
     </style>
   </head>
   <body data-theme="light">
-    <div
-      class="grab"
-      id="grab"
-      role="separator"
-      aria-orientation="vertical"
-      tabindex="0"
-      aria-label="Resize browser pane"
-    >
-      <span class="grip" aria-hidden="true"></span>
-    </div>
     <div class="tab-row">
       <div class="tabs" id="tabs" role="tablist" aria-label="Browser tabs"></div>
       <button class="add" id="new-tab" type="button" aria-label="New tab">+</button>
@@ -293,7 +234,6 @@
           address: 'Address or search term',
           untitled: 'New tab',
           loading: 'Loading',
-          resize: 'Resize browser pane',
           busy: 'Working',
           noBridge: 'The browser pane is unavailable: its control page could not start.'
         },
@@ -309,7 +249,6 @@
           address: '网址',
           untitled: '新标签页',
           loading: '加载中',
-          resize: '调整浏览器面板宽度',
           busy: '处理中',
           noBridge: '浏览器面板不可用：控制面板未能启动。'
         }
@@ -319,7 +258,6 @@
       var tabsRow = document.getElementById('tabs')
       var noticeRow = document.getElementById('notice')
       var live = document.getElementById('live')
-      var grab = document.getElementById('grab')
       var address = document.getElementById('address')
       var buttons = {
         newTab: document.getElementById('new-tab'),
@@ -436,8 +374,6 @@
         document.body.dataset.theme = lastState.theme === 'dark' ? 'dark' : 'light'
         var labels = strings()
         tabsRow.setAttribute('aria-label', labels.tabs)
-        grab.setAttribute('aria-label', labels.resize)
-        grab.setAttribute('aria-valuetext', String(Math.round(lastState.paneWidth)))
         buttons.newTab.setAttribute('aria-label', labels.newTab)
         buttons.hide.setAttribute('aria-label', labels.hide)
         buttons.back.setAttribute('aria-label', labels.back)
@@ -524,59 +460,24 @@
       })
       tabsRow.addEventListener('click', function (event) {
         var target = event.target
-        if (!target.dataset || !target.dataset.tabId) return
+        // The visible label and close glyph are nested inside the tab button;
+        // resolve the click to the button before reading its tab id.
+        while (target && target !== tabsRow && (!target.dataset || !target.dataset.tabId)) {
+          target = target.parentElement
+        }
+        if (!target || target === tabsRow || !target.dataset || !target.dataset.tabId) return
         event.stopPropagation()
         var isClose = target.classList.contains('close')
-        send(isClose ? { type: 'close-tab', tabId: target.dataset.tabId } : { type: 'activate-tab', tabId: target.dataset.tabId })
-      })
-
-      // Dragging the edge re-splits the content area. One action per animation frame
-      // keeps the main process from re-laying-out on every pointer sample.
-      var drag = null
-      var dragFrame = 0
-      var dragPendingWidth = 0
-      // Merging a burst into one frame keeps the newest width, not the first: the
-      // pane must not freeze at wherever the cursor was when the frame started.
-      function queueWidth(width) {
-        dragPendingWidth = width
-        if (dragFrame) return
-        dragFrame = requestAnimationFrame(function () {
-          dragFrame = 0
-          send({ type: 'set-pane-width', width: Math.round(dragPendingWidth) })
-        })
-      }
-      grab.addEventListener('pointerdown', function (event) {
-        if (!lastState) return
-        drag = { startClientX: event.clientX, startWidth: lastState.paneWidth }
-        grab.dataset.dragging = 'true'
-        // Capture can reject an unknown pointer id; losing it only means the drag
-        // stops following the cursor, so it must not break the press itself.
-        try {
-          if (typeof grab.setPointerCapture === 'function') grab.setPointerCapture(event.pointerId)
-        } catch (ignored) {}
-      })
-      grab.addEventListener('pointermove', function (event) {
-        if (!drag) return
-        // Pointer capture keeps the stream even when the cursor leaves the handle.
-        queueWidth(drag.startWidth + (event.clientX - drag.startClientX))
-      })
-      function endDrag(event) {
-        if (!drag) return
-        drag = null
-        delete grab.dataset.dragging
-        if (grab.hasPointerCapture && grab.hasPointerCapture(event.pointerId)) {
-          grab.releasePointerCapture(event.pointerId)
+        if (isClose) {
+          send({ type: 'close-tab', tabId: target.dataset.tabId })
+          return
         }
-      }
-      grab.addEventListener('pointerup', endDrag)
-      grab.addEventListener('pointercancel', endDrag)
-      grab.addEventListener('keydown', function (event) {
-        if (!lastState) return
-        var step = event.shiftKey ? 160 : 40
-        if (event.key === 'ArrowLeft') queueWidth(lastState.paneWidth - step)
-        else if (event.key === 'ArrowRight') queueWidth(lastState.paneWidth + step)
-        else return
-        event.preventDefault()
+        var close = event.target
+        if (close && close.classList && close.classList.contains('close')) {
+          send({ type: 'close-tab', tabId: target.dataset.tabId })
+          return
+        }
+        send({ type: 'activate-tab', tabId: target.dataset.tabId })
       })
 
       if (!bridge) {

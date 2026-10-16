@@ -1045,8 +1045,8 @@ function createWindow(): BrowserWindow {
     resolveSafeModeAction({ type: 'quit' })
   })
   mainWindow = window
-  // The pane is a child of the window, not of the app launch: re-dock it so a
-  // close-to-tray reopen does not silently lose the embedded browser.
+  // Reattach the browser's views after a close-to-tray reopen. The browser window
+  // is top-level, but its renderer views are recreated when the main window changes.
   void agentBrowser?.attachToWindow().catch((error: unknown) => {
     console.warn(
       '[agent-browser] could not re-dock into the new window:',
@@ -3398,6 +3398,7 @@ async function bootstrap(): Promise<void> {
         htmlPath: desktopResourcePath('agent-browser-pane.html'),
         preloadPath: join(import.meta.dirname, '../preload/agent-browser-pane.cjs')
       }),
+      createPaneWindow: (options) => new BrowserWindow(options),
     })
     agentBrowserCdpEndpoint = await agentBrowser.start()
     // File fallback: if the env var ever gets lost in transit, the plugin

@@ -177,6 +177,14 @@ class FakeWindow {
     this.setContentBounds(bounds)
   }
 
+  setContentSize(width: number, height: number): void {
+    this.width = width
+    this.height = height
+  }
+
+  hide(): void {}
+  showInactive(): void {}
+
   emitResize(): void {
     for (const handler of this.listeners.get('resize') ?? []) handler()
   }
@@ -240,6 +248,45 @@ const docked = async (browser: Browser): Promise<void> => {
 }
 
 describe('Agent browser pane docking', () => {
+  it('creates a top-level browser window once and leaves its placement to the user', async () => {
+    spawned.length = 0
+    const main = new FakeWindow()
+    main.x = 100
+    let pane: FakeWindow | undefined
+    let options: Record<string, unknown> | undefined
+    const browser = build(() => main, {
+      createPaneWindow: (input: Record<string, unknown>) => {
+        options = input
+        pane = new FakeWindow()
+        pane.setBounds(input as Partial<FakeBounds>)
+        return pane as never
+      }
+    })
+
+    await docked(browser)
+    expect(options?.parent).toBeUndefined()
+    expect(options?.frame).toBe(true)
+    expect(options?.skipTaskbar).toBe(false)
+    expect(pane?.x).toBe(main.x + main.width)
+    expect(main.width).toBe(1020)
+
+    const initial = pane?.getBounds()
+    pane!.setContentSize(1000, pane!.height)
+    pane!.emitResize()
+    expect(browser.currentPaneWidth).toBe(1000)
+
+    browser.setVisible(false)
+    expect(main.width).toBe(1600)
+
+    browser.setVisible(true)
+    main.x = 400
+    main.width = 1200
+    main.emitResize()
+    expect(pane?.getBounds()).toMatchObject({ x: initial?.x, width: 1000 })
+    browser.setVisible(false)
+    expect(main.width).toBe(1200)
+  })
+
   it('reports failure instead of silently doing nothing when there is no window', async () => {
     const browser = new AgentBrowser(windowGetter(() => undefined)) as Browser
 
@@ -455,6 +502,23 @@ describe('Agent browser tab strip', () => {
     expect(browser.listTargets().map((listed) => listed.id)).toContain(target.id)
   })
 
+  it('reuses the startup placeholder for the first model-created target', async () => {
+    spawned.length = 0
+    const window = new FakeWindow()
+    const browser = build(() => window)
+    await browser.start()
+    try {
+      const first = await browser.createTarget('https://example.com/first')
+      expect(browser.listTargets()).toHaveLength(1)
+      expect(first.url).toBe('https://example.com/first')
+
+      await browser.createTarget('https://example.com/second')
+      expect(browser.listTargets()).toHaveLength(2)
+    } finally {
+      await browser.stop()
+    }
+  })
+
   it('navigates the active tab from typed text and keeps the window width', async () => {
     spawned.length = 0
     const window = new FakeWindow()
@@ -513,15 +577,17 @@ describe('Agent browser tab strip', () => {
   it('moves the split when the strip reports a dragged width', async () => {
     spawned.length = 0
     const window = new FakeWindow()
-    const browser = build(() => window)
+    const browser = build(() => window, {}, wide())
     await docked(browser)
 
     const state = await browser.applyPaneAction({ type: 'set-pane-width', width: 600 })
     expect(state?.paneWidth).toBe(600)
-    expect(window.activePage().bounds).toMatchObject({ x: 1000, width: 600 })
+    expect(window.activePage().bounds).toMatchObject({ x: 1600, width: 600 })
+    expect(window.width).toBe(2200)
 
-    const capped = await browser.applyPaneAction({ type: 'set-pane-width', width: 1500 })
-    expect(capped?.paneWidth).toBe(1600 - 640)
+    const resized = await browser.applyPaneAction({ type: 'set-pane-width', width: 700 })
+    expect(resized?.paneWidth).toBe(700)
+    expect(window.width).toBe(2300)
   })
 
   it('rejects gestures that are not declared actions', async () => {

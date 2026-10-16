@@ -104,9 +104,6 @@ window.__ModuleLoader__.load({
       }, unread ? (chinese ? '标为已读' : 'Mark as read') : (chinese ? '标为未读' : 'Mark as unread'))
     }
 
-    // The same accelerator the native View menu registers. It is only a hint here:
-    // the shortcut works on every platform, the menu bar itself does not show on
-    // Windows, and this button is the entry point a user can actually find.
     const AGENT_BROWSER_ACCELERATOR = 'Ctrl+Shift+B'
 
     function agentBrowserLabels() {
@@ -116,18 +113,6 @@ window.__ModuleLoader__.load({
         : { show: 'Show Browser', hide: 'Hide Browser' }
     }
 
-    /**
-     * Session-header entry point for the embedded agent browser.
-     *
-     * The pane is a native view, so the page cannot own its state: the CDP relay
-     * opens it by itself when the model first connects, and a button that guessed
-     * from its own clicks would be wrong exactly then. Both the initial read and
-     * the push channel come from the main process through `dshDesktop.agentBrowser`.
-     *
-     * It renders nothing when this run has no pane (the desktop failed to start it
-     * and the plugin fell back to its own browser window) rather than leaving a
-     * control that cannot do anything.
-     */
     function AgentBrowserHeaderAction() {
       const bridge = typeof window === 'undefined' ? undefined : window.dshDesktop?.agentBrowser
       const [status, setStatus] = React.useState(undefined)
@@ -135,41 +120,28 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         if (!bridge) return undefined
         let active = true
-        const remember = (value) => {
-          if (active) setStatus(value)
-        }
+        const remember = (value) => { if (active) setStatus(value) }
         bridge.getStatus().then(remember, () => remember(undefined))
         const unsubscribe = bridge.onStatus(remember)
-        return () => {
-          active = false
-          unsubscribe()
-        }
+        return () => { active = false; unsubscribe() }
       }, [])
       if (!bridge || status === undefined || status.available === false) return null
       const labels = agentBrowserLabels()
-      return React.createElement(
-        Button,
-        {
-          type: 'button',
-          variant: 'toolbar',
-          size: 'sm',
-          disabled: pending,
-          // Text changes with the state as well, so the toggle is not colour-only.
-          'aria-pressed': status.visible,
-          title: `${labels.show} (${AGENT_BROWSER_ACCELERATOR})`,
-          onClick: () => {
-            setPending(true)
-            bridge.toggle().then(
-              (value) => {
-                setStatus(value)
-                setPending(false)
-              },
-              () => setPending(false)
-            )
-          }
-        },
-        status.visible ? labels.hide : labels.show
-      )
+      return React.createElement(Button, {
+        type: 'button',
+        variant: 'toolbar',
+        size: 'sm',
+        disabled: pending,
+        'aria-pressed': status.visible,
+        title: `${labels.show} (${AGENT_BROWSER_ACCELERATOR})`,
+        onClick: () => {
+          setPending(true)
+          bridge.toggle().then(
+            (value) => { setStatus(value); setPending(false) },
+            () => setPending(false)
+          )
+        }
+      }, status.visible ? labels.hide : labels.show)
     }
 
     const inject = ['slots', 'remote.session', 'sessions', 'uiWorkspace']
@@ -235,6 +207,13 @@ window.__ModuleLoader__.load({
           })
         }, DeleteSessionMenuItem)
       )
+      ctx.slots.inject('conversation.session.header.actions', () =>
+        ctx.slots.register({
+          name: 'conversation.session.header.actions',
+          id: 'desktop-agent-browser',
+          order: 40
+        }, AgentBrowserHeaderAction)
+      )
       ctx.slots.inject('sidebar.workspaces.session.menu.item', () =>
         ctx.slots.register({
           name: 'sidebar.workspaces.session.menu.item',
@@ -255,16 +234,6 @@ window.__ModuleLoader__.load({
           id: 'desktop-unread-session',
           order: 350
         }, UnreadSessionMenuItem)
-      )
-      ctx.slots.inject('conversation.session.header.actions', () =>
-        ctx.slots.register(
-          {
-            name: 'conversation.session.header.actions',
-            id: 'desktop-agent-browser',
-            order: 40
-          },
-          AgentBrowserHeaderAction
-        )
       )
     }
 

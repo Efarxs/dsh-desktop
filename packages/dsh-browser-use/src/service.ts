@@ -140,6 +140,15 @@ export class BrowserService {
     if (this.launchedOwn) {
       const targets = await listTargets(endpoint);
       page = targets.find((t) => t.type === 'page');
+    } else if (this.cfg.cdpEndpointSource === '环境变量 DSH_BROWSER_USE_CDP' || this.cfg.cdpEndpointSource === '文件 agent-browser-cdp.json') {
+      // The desktop relay creates one placeholder target before the first model
+      // connection. Reusing its sole blank page keeps the first connection from
+      // producing an extra empty tab while still leaving normal external Chrome
+      // tabs untouched once the user has more than one page.
+      const targets = await listTargets(endpoint);
+      if (targets.length === 1 && targets[0]?.type === 'page' && targets[0].url === 'about:blank') {
+        page = targets[0];
+      }
     }
     if (!page) page = await this.hub.createPage(this.cfg.startUrl);
     this.target = page;

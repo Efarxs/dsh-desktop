@@ -3,7 +3,7 @@
 deepseek-harness 插件：给模型一套 Codex 式的浏览器操控能力。
 
 - 插件单独启动用户本机装的 Chrome / Edge（独立 profile，登录态持久化，不碰日常浏览器）
-- 模型通过 16 个 `browser_*` 工具操控页面：导航 / 快照 / 点击 / 输入 / 按键 / 悬停 / 下拉 / 截图 / 等待 / 后退 / 标签页 / 对话框 / JS 求值（默认关）/ 快照搜索 / 批准站点 / 状态
+- 模型通过 24 个 `browser_*` 工具操控页面：导航 / 快照 / 点击 / 输入 / 按键 / 悬停 / 下拉 / 截图 / 等待 / 后退 / 标签页 / 对话框 / JS 求值（默认关）/ 快照搜索 / 批准站点 / 状态，以及页面信息、元素读取、选择器等待、URL 等待、滚动、拖动、勾选、文件上传
 - 决策主通道是 CDP `Accessibility.getFullAXTree` 快照（`[ref=eN]` 元素编号，CDP 原生没有 ref，是插件自己编的）
 - 浏览器是 headful 起在本机的**真实窗口**：用户直接看它、随时人工接管（登录、验证码）；模型的视觉靠 `browser_take_screenshot`（经 saveImageBlock 发 `{type:'image', attachment}` 真链路）
 
@@ -28,7 +28,7 @@ deepseek-harness 插件：给模型一套 Codex 式的浏览器操控能力。
 > `screencast` 配置项还保留在配置结构里（历史遗留），但投屏功能已在 2026-10-15 下线，
 > 改它没有任何效果。
 
-## 工具一览（16 个）
+## 工具一览（24 个）
 
 | 工具 | 作用 |
 |---|---|
@@ -48,6 +48,14 @@ deepseek-harness 插件：给模型一套 Codex 式的浏览器操控能力。
 | `browser_find` | 在快照里按关键字搜片段（快照太长时先用它） |
 | `browser_approve_origin` | 用户说"允许"后，模型调它批准某站点（本会话有效） |
 | `browser_status` | 浏览器状态：运行中/URL/标题/待处理对话框 |
+| `browser_page_info` | 当前页面 URL、标题、视口、页面尺寸和滚动位置 |
+| `browser_read_element` | 按 CSS 选择器读取元素内容、值、属性和可见性 |
+| `browser_wait_for_selector` | 等待 CSS 元素出现、挂载或隐藏 |
+| `browser_wait_for_url` | 等待 URL 片段或正则匹配 |
+| `browser_scroll` | 按像素滚动或滚动到指定元素 |
+| `browser_drag` | 按坐标拖动鼠标完成滑块/拖放操作 |
+| `browser_check` | 勾选或取消 checkbox/radio |
+| `browser_upload` | 设置 file input 的本机文件 |
 
 典型一轮：`browser_navigate` → `browser_snapshot` → `browser_click`/`browser_type` → 新快照 → …
 每次动作后都返回新快照，保持 sense-plan-act 闭环（跟 codex 一样，不是看视频流做决策）。
@@ -86,8 +94,8 @@ deepseek-harness 插件：给模型一套 Codex 式的浏览器操控能力。
 
 ## 能力矩阵（相对 playwright-mcp v0.0.83 的 72 工具）
 
-已实现核心 16 工具（对标它的默认 24 里最常用的子集）。
-未实现：console/network 监听、拖拽、文件上传、坐标点选（vision）、cookie/storage 读写、
+已实现核心 24 工具（对标它的默认 24 里最常用的子集）。
+未实现：console/network 监听、文件上传、坐标点选（vision）、cookie/storage 读写、
 PDF、录制/tracing、测试断言类工具。需要的话按这个清单继续补。
 
 ## 待在真实 harness 上验证
